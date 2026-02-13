@@ -4,7 +4,6 @@ const socket = require("socket.io");
 const http = require("http");
 const { Chess } = require("chess.js");
 const path = require("path");
-const { title } = require("process");
 
 const app = express();
 
@@ -12,9 +11,10 @@ const server = http.createServer(app);
 const io = socket(server);
 
 const chess = new Chess();
+const RESET_DELAY_MS = 5000;
+let resetTimer = null;
 
 let players = {};
-let currentPlayer = "w";
 
 app.set("view engine", "ejs");
 app.use(express.static(path.join(__dirname, "public")));
@@ -22,6 +22,26 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) => {
   res.render("index", { title: "janaChess" });
 });
+
+function getGameOverPayload() {
+  if (chess.isCheckmate()) {
+    return {
+      reason: "checkmate",
+      winner: chess.turn() === "w" ? "black" : "white",
+      resetAfterMs: RESET_DELAY_MS,
+    };
+  }
+
+  if (chess.isStalemate()) {
+    return { reason: "stalemate", winner: null, resetAfterMs: RESET_DELAY_MS };
+  }
+
+  if (chess.isDraw()) {
+    return { reason: "draw", winner: null, resetAfterMs: RESET_DELAY_MS };
+  }
+
+  return { reason: "gameover", winner: null, resetAfterMs: RESET_DELAY_MS };
+}
 
 io.on("connection", function (uniquesocket) {
   console.log("connected bro");
@@ -34,6 +54,7 @@ io.on("connection", function (uniquesocket) {
   } else {
     uniquesocket.emit("spectatorRole");
   }
+  uniquesocket.emit("boardState", chess.fen());
 
   uniquesocket.on("disconnect", function () {
     if (uniquesocket.id === players.white) {
@@ -45,14 +66,23 @@ io.on("connection", function (uniquesocket) {
 
   uniquesocket.on("move", (move) => {
     try {
+      if (chess.isGameOver()) return;
       if (chess.turn() == 'w' && uniquesocket.id != players.white) return;
       if (chess.turn() == 'b' && uniquesocket.id != players.black) return;
 
       const result = chess.move(move);
       if (result) {
-        currentPlayer = chess.turn();
         io.emit("move", move);
         io.emit("boardState", chess.fen());
+        if (chess.isGameOver() && !resetTimer) {
+          io.emit("gameOver", getGameOverPayload());
+          resetTimer = setTimeout(() => {
+            chess.reset();
+            io.emit("boardState", chess.fen());
+            io.emit("gameReset");
+            resetTimer = null;
+          }, RESET_DELAY_MS);
+        }
       } else {
         console.log("invalidMove :", move)
         uniquesocket.emit("invalidMove", move);

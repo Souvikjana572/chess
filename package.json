@@ -1,0 +1,27 @@
+{
+  "name": "chess",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Souvikjana572/Chess.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Souvikjana572/Chess/issues"
+  },
+  "homepage": "https://github.com/Souvikjana572/Chess#readme",
+  "dependencies": {
+    "chess.js": "^1.4.0",
+    "ejs": "^4.0.1",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}

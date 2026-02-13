@@ -17,6 +17,7 @@ let sourceSquare = null;
 
 // Variable to store the player's role (white, black, or spectator)
 let playerRole = null;
+let gameOverActive = false;
 
 // Function to render the chessboard
 const renderBoard = () => {
@@ -45,7 +46,7 @@ const renderBoard = () => {
                 // Set the piece's Unicode character
                 pieceElement.innerText = getPieceUnicode(square);
                 // Make the piece draggable if it's the player's turn and piece
-                pieceElement.draggable = playerRole === square.color && playerRole === chess.turn();
+                pieceElement.draggable = !gameOverActive && playerRole === square.color && playerRole === chess.turn();
 
                 // Add dragstart event listener to the piece
                 pieceElement.addEventListener("dragstart", (e) => {
@@ -77,6 +78,8 @@ const renderBoard = () => {
                     }
                     // Handle the move
                     handleMove(sourceSquare, TargetSource);
+                    draggedPiece = null;
+                    sourceSquare = null;
                 }
             });
             // Append the square to the board
@@ -90,8 +93,6 @@ const renderBoard = () => {
     else {
         boardelement.classList.remove("flipped");
     }
-    // Update the game status
-    updateGameStatus();
 };
 
 // Function to handle a move
@@ -127,8 +128,6 @@ socket.on("move", function (move) {
     chess.move(move);
     // Re-render the board
     renderBoard();
-    // Update the game status
-    updateGameStatus();
 })
 
 // Socket event listener for spectator role
@@ -144,24 +143,44 @@ socket.on("boardState", function (fen) {
     renderBoard();
 })
 
+socket.on("gameOver", function (payload) {
+    gameOverActive = true;
+    showPopup(buildGameOverMessage(payload));
+});
+
+socket.on("gameReset", function () {
+    gameOverActive = false;
+    closePopup();
+    renderBoard();
+});
+
 // Initial board render
 renderBoard();
 
-// Function to update the game status
-function updateGameStatus() {
-    if (chess.isGameOver()) {
-        let message = "";
-        if (chess.isCheckmate()) {
-            // Set message based on whether the current player won or lost
-            message = playerRole === chess.turn() ? "You lost!" : "You won!";
-        } else if (chess.isDraw()) {
-            message = "It's a draw!";
-        } else if (chess.isStalemate()) {
-            message = "Stalemate!";
+function buildGameOverMessage(payload) {
+    const resetSeconds = Math.floor((payload?.resetAfterMs || 5000) / 1000);
+
+    if (payload?.reason === "checkmate") {
+        const winnerRole = payload.winner === "white" ? "w" : "b";
+        const winnerLabel = payload.winner === "white" ? "White" : "Black";
+        if (!playerRole) {
+            return `${winnerLabel} wins by checkmate. Restarting in ${resetSeconds}s...`;
         }
-        // Show the game over popup
-        showPopup(message);
+        if (playerRole === winnerRole) {
+            return `You won by checkmate. Restarting in ${resetSeconds}s...`;
+        }
+        return `You lost by checkmate. Restarting in ${resetSeconds}s...`;
     }
+
+    if (payload?.reason === "stalemate") {
+        return `Stalemate. Restarting in ${resetSeconds}s...`;
+    }
+
+    if (payload?.reason === "draw") {
+        return `Draw. Restarting in ${resetSeconds}s...`;
+    }
+
+    return `Game over. Restarting in ${resetSeconds}s...`;
 }
 
 // Function to show the game over popup
