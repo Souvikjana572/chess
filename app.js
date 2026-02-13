@@ -1,3 +1,4 @@
+//this is a chess game server built using node.js, express, socket.io and chess.js. It allows two players to play chess in real-time, while also allowing spectators to watch the game. The server manages player connections, game state, and move validation using the chess.js library.
 const express = require("express");
 const socket = require("socket.io");
 const http = require("http");
