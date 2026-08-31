@@ -100,6 +100,35 @@
             transform: scale(1.15);
         }
 
+        .square-selected {
+            box-shadow: inset 0 0 0 3.5px #10b981 !important;
+            background-color: rgba(16, 185, 129, 0.3) !important;
+        }
+
+        .square-last-move {
+            background-color: rgba(250, 204, 21, 0.32) !important;
+        }
+
+        .legal-move-dot {
+            width: 28%;
+            height: 28%;
+            border-radius: 50%;
+            background-color: rgba(16, 185, 129, 0.7);
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+            pointer-events: none;
+            z-index: 15;
+        }
+
+        .legal-move-capture {
+            width: 85%;
+            height: 85%;
+            border-radius: 50%;
+            border: 4px solid rgba(239, 68, 68, 0.75);
+            box-shadow: inset 0 0 8px rgba(239, 68, 68, 0.4);
+            pointer-events: none;
+            z-index: 15;
+        }
+
         .flipped {
             transform: rotate(180deg);
         }
@@ -151,6 +180,9 @@
                 <span class="text-zinc-950 font-display font-black text-lg">jC</span>
             </div>
             <span class="font-display font-bold text-xl tracking-tight bg-gradient-to-r from-emerald-400 via-teal-400 to-blue-400 bg-clip-text text-transparent">janaChess</span>
+            <span id="room-badge" class="ml-2 px-2.5 py-0.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded-md text-zinc-400">
+                Room: default
+            </span>
         </div>
         <div class="flex items-center gap-4">
             <span id="role-badge" class="px-3 py-1 text-xs font-medium bg-zinc-900 border border-zinc-800 rounded-full text-zinc-400 flex items-center gap-2">
@@ -219,10 +251,10 @@
                             <svg class="w-8 h-8 text-zinc-700 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
                             </svg>
-                            <p class="text-xs text-zinc-600">No moves played yet. Start dragging pieces to play!</p>
+                            <p class="text-xs text-zinc-600">No moves played yet. Click or drag pieces to play!</p>
                         </div>
                         <div id="move-history-grid" class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm font-mono text-zinc-400 hidden">
-                            <!-- Populated dynamically: Odd numbers (White) on left, Even numbers (Black) on right -->
+                            <!-- Populated dynamically -->
                         </div>
                     </div>
                 </div>
@@ -253,6 +285,21 @@
         <p>© 2026 janaChess. Server authoritative move validation. Powered by chess.js & socket.io.</p>
     </footer>
 
+    <!-- Pawn Promotion Glass Modal -->
+    <div id="promotion-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+        <div class="bg-zinc-900 border border-zinc-800 max-w-xs w-full mx-4 rounded-2xl p-6 shadow-2xl text-center flex flex-col gap-4 relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-blue-500"></div>
+            <h3 class="font-display font-bold text-lg text-zinc-100">Promote Pawn</h3>
+            <p class="text-zinc-400 text-xs">Select piece to promote to:</p>
+            <div class="grid grid-cols-4 gap-3 my-2">
+                <button data-piece="q" class="promotion-option py-3 bg-zinc-800 hover:bg-emerald-950/50 border border-zinc-700 hover:border-emerald-500/50 rounded-xl text-3xl transition-all shadow flex items-center justify-center">♕</button>
+                <button data-piece="r" class="promotion-option py-3 bg-zinc-800 hover:bg-emerald-950/50 border border-zinc-700 hover:border-emerald-500/50 rounded-xl text-3xl transition-all shadow flex items-center justify-center">♖</button>
+                <button data-piece="b" class="promotion-option py-3 bg-zinc-800 hover:bg-emerald-950/50 border border-zinc-700 hover:border-emerald-500/50 rounded-xl text-3xl transition-all shadow flex items-center justify-center">♗</button>
+                <button data-piece="n" class="promotion-option py-3 bg-zinc-800 hover:bg-emerald-950/50 border border-zinc-700 hover:border-emerald-500/50 rounded-xl text-3xl transition-all shadow flex items-center justify-center">♘</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Game Over Glass Modal -->
     <div id="game-over-popup" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center hidden">
         <div class="bg-zinc-900 border border-zinc-800 max-w-sm w-full mx-4 rounded-2xl p-6 shadow-2xl text-center flex flex-col gap-4 relative overflow-hidden">
@@ -269,6 +316,9 @@
             </button>
         </div>
     </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <!-- Socket.IO & Frontend Game Script -->
     <script src="/socket.io/socket.io.js"></script>

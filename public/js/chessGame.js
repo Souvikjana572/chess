@@ -3,6 +3,10 @@ import { Chess } from "/vendor/chess.js";
 
 const socket = io();
 
+// Parse room ID from URL parameters
+const urlParams = new URLSearchParams(window.location.search);
+const roomId = urlParams.get("room") || "default";
+
 // Create a new Chess game instance
 const chess = new Chess();
 
@@ -10,24 +14,75 @@ const chess = new Chess();
 const boardelement = document.querySelector('.chessboard');
 const btnFlipBoard = document.getElementById('btn-flip-board');
 const btnCopyLink = document.getElementById('btn-copy-link');
+const roomBadge = document.getElementById('room-badge');
+const promotionModal = document.getElementById('promotion-modal');
+const toastContainer = document.getElementById('toast-container');
 
-// Variables to keep track of the dragged piece and its source square
+if (roomBadge) {
+    roomBadge.innerText = `Room: ${roomId}`;
+}
+
+// Variables for drag, selection, and game state
 let draggedPiece = null;
 let sourceSquare = null;
+let selectedSquare = null; // { row, col }
+let legalMoveTargets = []; // array of { toRow, toCol, verbose }
+let lastMove = null; // { fromSquare: {row, col}, toSquare: {row, col} }
+let pendingPromotion = null; // { source, target }
 
-// Variable to store the player's role (white 'w', black 'b', or spectator null)
 let playerRole = null;
 let gameOverActive = false;
 let boardFlipped = false; // Manual view flip toggle
 
-// Function to calculate captured pieces
+// Emit joinRoom on initial socket connection
+socket.on("connect", () => {
+    socket.emit("joinRoom", roomId);
+});
+
+const squareToAlgebraic = (row, col) => {
+    return `${String.fromCharCode(97 + col)}${8 - row}`;
+};
+
+const algebraicToSquare = (squareStr) => {
+    if (!squareStr || squareStr.length < 2) return null;
+    const col = squareStr.charCodeAt(0) - 97;
+    const row = 8 - parseInt(squareStr[1]);
+    return { row, col };
+};
+
+// Toast message helper
+const showToast = (message, isError = true) => {
+    if (!toastContainer) return;
+    const toast = document.createElement("div");
+    toast.className = `px-4 py-2 rounded-xl text-xs font-semibold shadow-lg backdrop-blur-md transition-all duration-300 transform translate-y-2 opacity-0 pointer-events-auto border flex items-center gap-2 ${
+        isError 
+            ? "bg-red-950/80 border-red-800/80 text-red-200 shadow-red-950/40" 
+            : "bg-emerald-950/80 border-emerald-800/80 text-emerald-200 shadow-emerald-950/40"
+    }`;
+    toast.innerHTML = `
+        <svg class="w-4 h-4 shrink-0 ${isError ? 'text-red-400' : 'text-emerald-400'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${isError ? 'M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' : 'M5 13l4 4L19 7'}"></path>
+        </svg>
+        <span>${message}</span>
+    `;
+    toastContainer.appendChild(toast);
+    
+    requestAnimationFrame(() => {
+        toast.classList.remove("translate-y-2", "opacity-0");
+    });
+
+    setTimeout(() => {
+        toast.classList.add("opacity-0", "translate-y-2");
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+};
+
+// Calculate captured pieces
 const getCapturedPieces = () => {
     const startingPieces = {
         w: { p: 8, r: 2, n: 2, b: 2, q: 1 },
         b: { p: 8, r: 2, n: 2, b: 2, q: 1 }
     };
-    
-    // Count pieces currently on the board
     const currentPieces = {
         w: { p: 0, r: 0, n: 0, b: 0, q: 0 },
         b: { p: 0, r: 0, n: 0, b: 0, q: 0 }
@@ -35,83 +90,91 @@ const getCapturedPieces = () => {
     
     chess.board().forEach(row => {
         row.forEach(square => {
-            if (square && square.type !== 'k') { // King cannot be captured
+            if (square && square.type !== 'k') {
                 currentPieces[square.color][square.type]++;
             }
         });
     });
     
-    // Calculate captured pieces
-    const captured = {
-        w: [], // White pieces captured (held by Black)
-        b: []  // Black pieces captured (held by White)
-    };
-    
-    // White pieces captured
+    const captured = { w: [], b: [] };
     for (const type in startingPieces.w) {
         const count = startingPieces.w[type] - currentPieces.w[type];
-        for (let i = 0; i < count; i++) {
-            captured.w.push(type);
-        }
+        for (let i = 0; i < count; i++) captured.w.push(type);
     }
-    
-    // Black pieces captured
     for (const type in startingPieces.b) {
         const count = startingPieces.b[type] - currentPieces.b[type];
-        for (let i = 0; i < count; i++) {
-            captured.b.push(type);
-        }
+        for (let i = 0; i < count; i++) captured.b.push(type);
     }
-    
     return captured;
 };
 
-// Function to render the chessboard
+// Function to render board programmatically without CSS rotation bugs
 const renderBoard = () => {
-    // Get the current board state
     const board = chess.board();
-    // Clear the existing board
     boardelement.innerHTML = "";
-    
-    // Iterate through each row of the board
-    board.forEach((row, rowindex) => {
-        // Iterate through each square in the row
-        row.forEach((square, squareIndex) => {
-            // Create a new div element for the square
+
+    const shouldFlip = (playerRole === "b" && !boardFlipped) || (playerRole !== "b" && boardFlipped);
+    const rowIndices = shouldFlip ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+    const colIndices = shouldFlip ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+
+    rowIndices.forEach((rowindex) => {
+        colIndices.forEach((squareIndex) => {
+            const square = board[rowindex][squareIndex];
             const squareElement = document.createElement("div");
             
-            // Add appropriate classes to the square (light or dark)
-            squareElement.classList.add("square",
-                rowindex % 2 === squareIndex % 2 ? "light" : "dark");
+            squareElement.classList.add(
+                "square",
+                rowindex % 2 === squareIndex % 2 ? "light" : "dark"
+            );
             
-            // Set data attributes for row and column
             squareElement.dataset.row = rowindex;
             squareElement.dataset.column = squareIndex;
-            
-            // If there's a piece on this square
+
+            // Highlight selected square
+            if (selectedSquare && selectedSquare.row === rowindex && selectedSquare.col === squareIndex) {
+                squareElement.classList.add("square-selected");
+            }
+
+            // Highlight last move
+            if (lastMove && (
+                (lastMove.fromSquare.row === rowindex && lastMove.fromSquare.col === squareIndex) ||
+                (lastMove.toSquare.row === rowindex && lastMove.toSquare.col === squareIndex)
+            )) {
+                squareElement.classList.add("square-last-move");
+            }
+
+            // Highlight legal move targets
+            const legalTarget = legalMoveTargets.find(m => m.toRow === rowindex && m.toCol === squareIndex);
+            if (legalTarget) {
+                const indicator = document.createElement("div");
+                if (square) {
+                    indicator.classList.add("legal-move-capture");
+                } else {
+                    indicator.classList.add("legal-move-dot");
+                }
+                squareElement.appendChild(indicator);
+            }
+
+            // Piece rendering
             if (square) {
-                // Create a new div element for the piece
                 const pieceElement = document.createElement("div");
-                
-                // Add appropriate classes to the piece (white or black)
                 pieceElement.classList.add("piece", square.color === "w" ? "white" : "black");
-                
-                // Set the piece's Unicode character
                 pieceElement.innerText = getPieceUnicode(square);
                 
-                // Make the piece draggable if it's the player's turn and piece
-                pieceElement.draggable = !gameOverActive && playerRole === square.color && playerRole === chess.turn();
+                const isMyPiece = playerRole === square.color;
+                const isMyTurn = playerRole === chess.turn();
+                
+                pieceElement.draggable = !gameOverActive && isMyPiece && isMyTurn;
                 pieceElement.classList.toggle("draggable", pieceElement.draggable);
 
-                // Add dragstart event listener to the piece
                 pieceElement.addEventListener("dragstart", (e) => {
                     if (pieceElement.draggable) {
-                        // Set the dragged piece and its source square
                         draggedPiece = pieceElement;
                         sourceSquare = { row: rowindex, col: squareIndex };
                         pieceElement.classList.add("dragging");
-                        // Set the drag data (required for Firefox)
                         e.dataTransfer.setData("text/plain", "");
+                        
+                        selectSquare(rowindex, squareIndex);
                     }
                 });
 
@@ -119,89 +182,202 @@ const renderBoard = () => {
                     pieceElement.classList.remove("dragging");
                 });
 
-                // Append the piece to the square
                 squareElement.appendChild(pieceElement);
             }
 
-            // Add dragover event listener to the square
-            squareElement.addEventListener("dragover", function (e) {
-                // Prevent default to allow drop
+            // Click / Tap listener for square
+            squareElement.addEventListener("click", (e) => {
+                e.stopPropagation();
+                handleSquareSelect(rowindex, squareIndex);
+            });
+
+            // Dragover listener
+            squareElement.addEventListener("dragover", (e) => {
                 e.preventDefault();
             });
 
-            // Add drop event listener to the square
-            squareElement.addEventListener("drop", function (e) {
-                // Prevent default browser behavior
+            // Drop listener
+            squareElement.addEventListener("drop", (e) => {
                 e.preventDefault();
-                if (draggedPiece) {
-                    // Get the target square coordinates
-                    const TargetSource = {
+                if (draggedPiece && sourceSquare) {
+                    const targetSquare = {
                         row: parseInt(squareElement.dataset.row),
                         col: parseInt(squareElement.dataset.column),
                     };
-                    // Handle the move
-                    handleMove(sourceSquare, TargetSource);
+                    attemptMove(sourceSquare, targetSquare);
                     draggedPiece = null;
                     sourceSquare = null;
                 }
             });
-            
-            // Append the square to the board
-            boardelement.append(squareElement);
+
+            boardelement.appendChild(squareElement);
         });
     });
 
-    // Flip the board if the player is black (or manually toggled)
-    const shouldFlip = (playerRole === "b" && !boardFlipped) || (playerRole !== "b" && boardFlipped);
-    if (shouldFlip) {
-        boardelement.classList.add("flipped");
-    } else {
-        boardelement.classList.remove("flipped");
-    }
-
-    // Update all status panels on render
     updateUIElements();
 };
 
-// Function to handle a move
-const handleMove = (source, target) => {
-    // Create a move object in the format required by chess.js
-    const move = {
-        from: `${String.fromCharCode(97 + source.col)}${8 - source.row}`,
-        to: `${String.fromCharCode(97 + target.col)}${8 - target.row}`,
-        promotion: 'q', // Always promote to queen for simplicity
-    };
-    // Emit the move to the server
-    socket.emit("move", move);
+const selectSquare = (row, col) => {
+    const square = chess.board()[row][col];
+    if (!square) {
+        selectedSquare = null;
+        legalMoveTargets = [];
+        renderBoard();
+        return;
+    }
+
+    const isMyPiece = playerRole === square.color;
+    const isMyTurn = playerRole === chess.turn();
+
+    if (!gameOverActive && isMyPiece && isMyTurn) {
+        selectedSquare = { row, col };
+        const alg = squareToAlgebraic(row, col);
+        const moves = chess.moves({ square: alg, verbose: true });
+        legalMoveTargets = moves.map(m => {
+            const dest = algebraicToSquare(m.to);
+            return { toRow: dest.row, toCol: dest.col, verbose: m };
+        });
+    } else {
+        selectedSquare = null;
+        legalMoveTargets = [];
+    }
+    renderBoard();
 };
 
-// Function to get the Unicode character for a chess piece
-// We use solid filled pieces for both White and Black to be visually symmetric,
-// and append \uFE0E (Variation Selector-15) to force text-style monochrome rendering on Windows/e-mail clients.
+const handleSquareSelect = (row, col) => {
+    if (gameOverActive || !playerRole || playerRole !== chess.turn()) {
+        selectedSquare = null;
+        legalMoveTargets = [];
+        renderBoard();
+        return;
+    }
+
+    if (selectedSquare) {
+        // Deselect if clicking the same square
+        if (selectedSquare.row === row && selectedSquare.col === col) {
+            selectedSquare = null;
+            legalMoveTargets = [];
+            renderBoard();
+            return;
+        }
+
+        // Check if clicking a legal target
+        const targetMove = legalMoveTargets.find(m => m.toRow === row && m.toCol === col);
+        if (targetMove) {
+            attemptMove(selectedSquare, { row, col });
+            selectedSquare = null;
+            legalMoveTargets = [];
+            return;
+        }
+
+        // Switch selection if clicking another of own pieces
+        const clickedSquarePiece = chess.board()[row][col];
+        if (clickedSquarePiece && clickedSquarePiece.color === playerRole) {
+            selectSquare(row, col);
+            return;
+        }
+
+        // Otherwise clear selection
+        selectedSquare = null;
+        legalMoveTargets = [];
+        renderBoard();
+    } else {
+        const square = chess.board()[row][col];
+        if (square && square.color === playerRole) {
+            selectSquare(row, col);
+        }
+    }
+};
+
+const attemptMove = (source, target) => {
+    if (source.row === target.row && source.col === target.col) {
+        return;
+    }
+
+    const fromAlg = squareToAlgebraic(source.row, source.col);
+    const toAlg = squareToAlgebraic(target.row, target.col);
+
+    const piece = chess.get(fromAlg);
+    const isPawn = piece && piece.type === 'p';
+    const isPromotionRank = (piece && piece.color === 'w' && target.row === 0) || 
+                           (piece && piece.color === 'b' && target.row === 7);
+
+    const moves = chess.moves({ square: fromAlg, verbose: true });
+    const isValid = moves.some(m => m.to === toAlg);
+
+    if (!isValid) {
+        showToast("Illegal move!", true);
+        selectedSquare = null;
+        legalMoveTargets = [];
+        renderBoard();
+        return;
+    }
+
+    if (isPawn && isPromotionRank) {
+        pendingPromotion = { source, target };
+        if (promotionModal) {
+            promotionModal.classList.remove("hidden");
+        }
+        return;
+    }
+
+    executeMove(source, target, 'q');
+};
+
+const executeMove = (source, target, promotionPiece = 'q') => {
+    const move = {
+        from: squareToAlgebraic(source.row, source.col),
+        to: squareToAlgebraic(target.row, target.col),
+        promotion: promotionPiece,
+    };
+    
+    lastMove = {
+        fromSquare: { row: source.row, col: source.col },
+        toSquare: { row: target.row, col: target.col }
+    };
+    
+    socket.emit("move", move);
+    selectedSquare = null;
+    legalMoveTargets = [];
+};
+
+// Promotion Modal setup
+if (promotionModal) {
+    const options = promotionModal.querySelectorAll('.promotion-option');
+    options.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const chosenPiece = btn.dataset.piece || 'q';
+            promotionModal.classList.add("hidden");
+            if (pendingPromotion) {
+                executeMove(pendingPromotion.source, pendingPromotion.target, chosenPiece);
+                pendingPromotion = null;
+            }
+        });
+    });
+}
+
+// Function to get Unicode character for pieces
 const getPieceUnicode = (piece) => {
     const unicodePieces = {
-        p: "\u265f", // Solid pawn
-        r: "\u265c", // Solid rook
-        n: "\u265e", // Solid knight
-        b: "\u265d", // Solid bishop
-        q: "\u265b", // Solid queen
-        k: "\u265a"  // Solid king
+        p: "\u265f",
+        r: "\u265c",
+        n: "\u265e",
+        b: "\u265d",
+        q: "\u265b",
+        k: "\u265a"
     };
     return (unicodePieces[piece.type] || "") + "\uFE0E";
 };
 
-// Function to update role, turn, move history, and captured pieces UI
+// Function to update UI elements
 const updateUIElements = () => {
     updateRoleUI();
     updateStatusUI();
     updateMoveHistoryUI();
-    
-    // Update captured pieces
     const captured = getCapturedPieces();
     updateCapturedPiecesUI(captured);
 };
 
-// Function to update the role badge and names
 const updateRoleUI = () => {
     const roleBadge = document.getElementById("role-badge");
     const playerUsername = document.getElementById("player-username");
@@ -247,7 +423,6 @@ const updateRoleUI = () => {
     }
 };
 
-// Function to update turn card and check alert
 const updateStatusUI = () => {
     const turnDot = document.getElementById("turn-dot");
     const turnLabel = document.getElementById("turn-label");
@@ -256,7 +431,7 @@ const updateStatusUI = () => {
     
     if (!turnDot || !turnLabel || !turnCard) return;
 
-    const turn = chess.turn(); // 'w' or 'b'
+    const turn = chess.turn();
     const isPlayerTurn = playerRole === turn;
     
     if (turn === 'w') {
@@ -267,7 +442,6 @@ const updateStatusUI = () => {
         turnLabel.innerText = "Black's Turn";
     }
     
-    // Highlight turn card if it is this client's turn
     if (playerRole && isPlayerTurn && !gameOverActive) {
         turnCard.classList.add("active-turn-glow", "border-emerald-500/40", "bg-emerald-950/20");
         turnCard.classList.remove("border-zinc-800", "bg-zinc-900/40");
@@ -280,7 +454,6 @@ const updateStatusUI = () => {
         turnLabel.classList.add("text-zinc-300");
     }
     
-    // Update check indicator
     if (statusAlert) {
         if (chess.inCheck() && !chess.isGameOver()) {
             statusAlert.innerText = "CHECK";
@@ -292,7 +465,6 @@ const updateStatusUI = () => {
     }
 };
 
-// Function to update the scrollable move history
 const updateMoveHistoryUI = () => {
     const history = chess.history({ verbose: true });
     const emptyState = document.getElementById("move-history-empty");
@@ -311,22 +483,18 @@ const updateMoveHistoryUI = () => {
     emptyState.classList.add("hidden");
     gridState.classList.remove("hidden");
     moveCountElement.innerText = `${history.length} move${history.length > 1 ? "s" : ""}`;
-    
     gridState.innerHTML = "";
     
-    // Group moves into pairs (turns)
     for (let i = 0; i < history.length; i += 2) {
         const moveNumber = Math.floor(i / 2) + 1;
         const whiteMove = history[i];
         const blackMove = history[i + 1];
         
-        // White move cell
         const whiteCell = document.createElement("div");
         whiteCell.className = "flex items-center gap-2 text-zinc-200 py-0.5";
         whiteCell.innerHTML = `<span class="text-zinc-600 text-xs w-6 text-right font-mono">${moveNumber}.</span> <span class="font-semibold">${whiteMove.san}</span>`;
         gridState.appendChild(whiteCell);
         
-        // Black move cell (if exists)
         const blackCell = document.createElement("div");
         blackCell.className = "flex items-center gap-2 text-zinc-400 py-0.5 pl-4";
         if (blackMove) {
@@ -337,24 +505,20 @@ const updateMoveHistoryUI = () => {
         gridState.appendChild(blackCell);
     }
     
-    // Scroll to the bottom of the container
     const container = document.getElementById("move-history-container");
     if (container) {
         container.scrollTop = container.scrollHeight;
     }
 };
 
-// Function to update captured pieces trophy lists
 const updateCapturedPiecesUI = (captured) => {
     const oppCapturedElement = document.getElementById("opp-captured");
     const playerCapturedElement = document.getElementById("player-captured");
-    
     if (!oppCapturedElement || !playerCapturedElement) return;
     
     oppCapturedElement.innerHTML = "";
     playerCapturedElement.innerHTML = "";
     
-    // Standard monochrome symbols for captured trophies
     const unicodeSymbols = {
         w: { p: "♙", r: "♖", n: "♘", b: "♗", q: "♕" },
         b: { p: "♟", r: "♜", n: "♞", b: "♝", q: "♛" }
@@ -364,15 +528,12 @@ const updateCapturedPiecesUI = (captured) => {
     let playerCapturedList = [];
     
     if (playerRole === "w") {
-        // Player is White (has Black's pieces). Opponent is Black (has White's pieces).
-        playerCapturedList = captured.b.map(type => `<span class="text-zinc-500 font-normal px-0.5" title="Black Captured Pawn/Piece">${unicodeSymbols.b[type]}</span>`);
-        oppCapturedList = captured.w.map(type => `<span class="text-zinc-300 font-normal px-0.5" title="White Captured Pawn/Piece">${unicodeSymbols.w[type]}</span>`);
+        playerCapturedList = captured.b.map(type => `<span class="text-zinc-500 font-normal px-0.5">${unicodeSymbols.b[type]}</span>`);
+        oppCapturedList = captured.w.map(type => `<span class="text-zinc-300 font-normal px-0.5">${unicodeSymbols.w[type]}</span>`);
     } else if (playerRole === "b") {
-        // Player is Black (has White's pieces). Opponent is White (has Black's pieces).
-        playerCapturedList = captured.w.map(type => `<span class="text-zinc-300 font-normal px-0.5" title="White Captured Pawn/Piece">${unicodeSymbols.w[type]}</span>`);
-        oppCapturedList = captured.b.map(type => `<span class="text-zinc-500 font-normal px-0.5" title="Black Captured Pawn/Piece">${unicodeSymbols.b[type]}</span>`);
+        playerCapturedList = captured.w.map(type => `<span class="text-zinc-300 font-normal px-0.5">${unicodeSymbols.w[type]}</span>`);
+        oppCapturedList = captured.b.map(type => `<span class="text-zinc-500 font-normal px-0.5">${unicodeSymbols.b[type]}</span>`);
     } else {
-        // Spectator view: top shows Black's captures (White pieces), bottom shows White's captures (Black pieces)
         oppCapturedList = captured.w.map(type => `<span class="text-zinc-300 font-normal px-0.5">${unicodeSymbols.w[type]}</span>`);
         playerCapturedList = captured.b.map(type => `<span class="text-zinc-500 font-normal px-0.5">${unicodeSymbols.b[type]}</span>`);
     }
@@ -381,49 +542,54 @@ const updateCapturedPiecesUI = (captured) => {
     playerCapturedElement.innerHTML = playerCapturedList.join("");
 };
 
-// Socket event listener for receiving player role
+// Socket event listeners
 socket.on("playerRole", function (role) {
     playerRole = role;
     renderBoard();
 });
 
-// Socket event listener for receiving moves
 socket.on("move", function (move) {
-    // Apply the move to the local chess instance
+    const fromSquare = algebraicToSquare(move.from);
+    const toSquare = algebraicToSquare(move.to);
+    if (fromSquare && toSquare) {
+        lastMove = { fromSquare, toSquare };
+    }
     chess.move(move);
-    // Re-render the board
     renderBoard();
 });
 
-// Socket event listener for spectator role
 socket.on("spectatorRole", function () {
     playerRole = null;
     renderBoard();
 });
 
-// Socket event listener for receiving board state
 socket.on("boardState", function (fen) {
-    // Only load if the board state actually differs, to prevent wiping move history
     if (chess.fen() !== fen) {
         chess.load(fen);
         renderBoard();
     }
 });
 
-// Socket event listener for game over
+socket.on("invalidMove", function (data) {
+    showToast(data?.reason || "Invalid move!", true);
+    renderBoard();
+});
+
 socket.on("gameOver", function (payload) {
     gameOverActive = true;
     showPopup(buildGameOverMessage(payload));
 });
 
-// Socket event listener for game reset
 socket.on("gameReset", function () {
     gameOverActive = false;
+    lastMove = null;
+    selectedSquare = null;
+    legalMoveTargets = [];
     closePopup();
     renderBoard();
 });
 
-// Event listener for manual view flip toggle
+// Flip Board button
 if (btnFlipBoard) {
     btnFlipBoard.addEventListener("click", () => {
         boardFlipped = !boardFlipped;
@@ -431,17 +597,18 @@ if (btnFlipBoard) {
     });
 }
 
-// Event listener for clipboard invite link copy
+// Copy Invite Link button
 if (btnCopyLink) {
     btnCopyLink.addEventListener("click", () => {
-        navigator.clipboard.writeText(window.location.href)
+        const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+        navigator.clipboard.writeText(inviteUrl)
             .then(() => {
                 const originalHTML = btnCopyLink.innerHTML;
                 btnCopyLink.innerHTML = `
-                    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                     </svg>
-                    Copied!
+                    Copied Link!
                 `;
                 btnCopyLink.classList.add("border-emerald-500/50", "text-emerald-400");
                 btnCopyLink.classList.remove("border-zinc-800", "text-zinc-300");
@@ -483,7 +650,6 @@ function buildGameOverMessage(payload) {
     return `Game over. Restarting in ${resetSeconds}s...`;
 }
 
-// Function to show the game over popup
 function showPopup(message) {
     const popup = document.getElementById('game-over-popup');
     const popupMessage = document.getElementById('popup-message');
@@ -493,7 +659,6 @@ function showPopup(message) {
     }
 }
 
-// Function to close the game over popup
 function closePopup() {
     const popup = document.getElementById('game-over-popup');
     if (popup) {
@@ -501,11 +666,10 @@ function closePopup() {
     }
 }
 
-// Add event listener for the close button on the popup
 const closePopupBtn = document.getElementById('close-popup');
 if (closePopupBtn) {
     closePopupBtn.addEventListener('click', closePopup);
 }
 
-// Initial board render
+// Initial render
 renderBoard();
